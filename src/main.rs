@@ -2,6 +2,7 @@ use actix_web::{web, App, HttpServer, Responder, HttpResponse};
 use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::fs;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Task {
@@ -81,6 +82,38 @@ async fn delete_task(task_id: web::Path<usize>, state: web::Data<AppState>) -> i
     }
 }
 
+async fn export_tasks(state: web::Data<AppState>) -> impl Responder {
+    let tasks = state.tasks.lock().unwrap();
+    match serde_json::to_string(&*tasks) {
+        Ok(json) => {
+            if fs::write("tasks.json", &json).is_ok() {
+                HttpResponse::Ok().body("Tasks exported successfully")
+            } else {
+                HttpResponse::InternalServerError().body("Failed to write tasks to file")
+            }
+        }
+        Err(_) => HttpResponse::InternalServerError().body("Failed to serialize tasks"),
+    }
+}
+
+async fn import_tasks(state: web::Data<AppState>) -> impl Responder {
+    match fs::read_to_string("tasks.json") {
+        Ok(json) => match serde_json::from_str::<Vec<Task>>(&json) {
+            Ok(imported_tasks) => {
+                let mut tasks = state.tasks.lock().unwrap();
+                let mut next_id = state.next_id.lock().unwrap();
+                for task in imported_tasks {
+                    tasks.push(task.clone());
+                    *next_id = (*next_id).max(task.id + 1);
+                }
+                HttpResponse::Ok().body("Tasks imported successfully")
+            }
+            Err(_) => HttpResponse::InternalServerError().body("Failed to parse tasks from file"),
+        },
+        Err(_) => HttpResponse::InternalServerError().body("Failed to read tasks from file"),
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let data = web::Data::new(AppState::default());
@@ -93,6 +126,8 @@ async fn main() -> std::io::Result<()> {
             .route("/tasks", web::post().to(add_task))
             .route("/tasks/{id}", web::put().to(update_task))
             .route("/tasks/{id}", web::delete().to(delete_task))
+            .route("/tasks/export", web::get().to(export_tasks))
+            .route("/tasks/import", web::post().to(import_tasks))
     })
         .bind("127.0.0.1:1488")?
         .run()
